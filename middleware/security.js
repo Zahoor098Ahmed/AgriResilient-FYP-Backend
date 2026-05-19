@@ -16,13 +16,17 @@ const limiter = rateLimit({
 });
 
 const securityMiddleware = (app) => {
-  // Sets secure HTTP headers
-  app.use(helmet());
+  // Sets secure HTTP headers - but relaxed for local development
+  app.use(helmet({
+    crossOriginResourcePolicy: false,
+    contentSecurityPolicy: false,
+  }));
 
-  // CORS: only allow frontend origin from .env
+  // CORS: allow all for development
   app.use(cors({
-    origin: '*', // For development, allow all origins
+    origin: '*',
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
     credentials: true
   }));
 

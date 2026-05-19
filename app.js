@@ -3,6 +3,7 @@ import dotenv from 'dotenv';
 import compression from 'compression';
 import securityMiddleware from './middleware/security.js';
 import detectRoutes from './routes/detect.js';
+import advisoryRoutes from './routes/advisory.js';
 import authRoutes from './routes/auth.js';
 import adminRoutes from './routes/admin.js';
 
@@ -34,6 +35,7 @@ app.use(express.urlencoded({ extended: true }));
 // Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/advisory', advisoryRoutes);
 app.use('/api', detectRoutes);
 
 // Health check

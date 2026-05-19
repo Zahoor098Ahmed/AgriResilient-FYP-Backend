@@ -1,7 +1,7 @@
 import express from 'express';
 import { body, validationResult } from 'express-validator';
 import upload from '../middleware/upload.js';
-import { handleDetection } from '../controllers/detectController.js';
+import { handleDetection, getMyDetections } from '../controllers/detectController.js';
 import { protect } from '../middleware/authMiddleware.js';
 
 const router = express.Router();
@@ -21,5 +21,6 @@ const validate = (req, res, next) => {
 // Accepts: multipart/form-data with field "image"
 // Protected: Only logged in users can scan
 router.post('/detect', protect, upload.single('image'), validate, handleDetection);
+router.get('/history', protect, getMyDetections);
 
 export default router;

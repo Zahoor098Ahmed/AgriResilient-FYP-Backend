@@ -11,12 +11,24 @@ export const handleDetection = async (req, res) => {
       });
     }
 
+    // Get language from query or body
+    const language = req.query.lang || req.body.language || 'en';
+
     // Call AI service
-    const aiResult = await detectObject(req.file.buffer);
+    const aiResult = await detectObject(req.file.buffer, language);
+
+    // If detection was skipped or failed but didn't throw (shouldn't happen with new logic but safe to keep)
+    if (!aiResult || aiResult.detected === "Analysis Failed") {
+      return res.status(503).json({
+        success: false,
+        message: 'AI analysis is currently unavailable. Please try again.'
+      });
+    }
 
     // Save to database
     const newDetection = new Detection({
       imageOriginalName: req.file.originalname,
+      userId: req.user.id,
       detectedObject: aiResult.detected,
       recyclables: aiResult.recyclables,
       confidence: aiResult.confidence
@@ -37,9 +49,29 @@ export const handleDetection = async (req, res) => {
 
   } catch (error) {
     console.error('Detection Error:', error);
+    
+    // Fallback is already handled inside detectObject in aiService.js
+    // We only reach here if something unexpected happens.
     res.status(500).json({
       success: false,
       message: 'An error occurred during object detection'
     });
   }
 };
+
+export const getMyDetections = async (req, res) => {
+  try {
+    const detections = await Detection.find({ userId: req.user.id }).sort('-createdAt');
+    res.status(200).json({
+      success: true,
+      count: detections.length,
+      data: { detections }
+    });
+  } catch (error) {
+    res.status(400).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+
