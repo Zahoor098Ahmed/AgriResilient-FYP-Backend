@@ -7,7 +7,8 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 const PORT = process.env.PORT || 5000;
-const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/recycle-vision';
+const MONGO_URI = process.env.MONGO_URI;
+const MONGO_URI_LOCAL = process.env.MONGO_URI_LOCAL || 'mongodb://localhost:27017/recycle-vision';
 
 if (cluster.isPrimary) {
   const numCPUs = os.cpus().length;
@@ -27,20 +28,32 @@ if (cluster.isPrimary) {
   // Workers can share any TCP connection
   // In this case it is an HTTP server
   const mongooseOptions = {
-    maxPoolSize: 10, // Maintain up to 10 socket connections
-    serverSelectionTimeoutMS: 5000, // Keep trying to send operations for 5 seconds
-    socketTimeoutMS: 45000, // Close sockets after 45 seconds of inactivity
+    maxPoolSize: 10,
+    serverSelectionTimeoutMS: 5000,
+    socketTimeoutMS: 45000,
   };
 
-  mongoose.connect(MONGO_URI, mongooseOptions)
-    .then(() => {
-      console.log(`[Worker ${process.pid}] Connected to MongoDB`);
-      app.listen(PORT, () => {
-        console.log(`[Worker ${process.pid}] Server started on port ${PORT}`);
-      });
-    })
-    .catch(err => {
-      console.error(`[Worker ${process.pid}] MongoDB connection error:`, err);
-      process.exit(1);
+  const connectDB = async () => {
+    try {
+      // Try primary URI (Atlas)
+      await mongoose.connect(MONGO_URI, mongooseOptions);
+      console.log(`[Worker ${process.pid}] Connected to MongoDB (Atlas/Primary)`);
+    } catch (err) {
+      console.error(`[Worker ${process.pid}] Atlas connection failed, trying Local...`);
+      try {
+        // Fallback to Local
+        await mongoose.connect(MONGO_URI_LOCAL, mongooseOptions);
+        console.log(`[Worker ${process.pid}] Connected to MongoDB (Local Compass)`);
+      } catch (localErr) {
+        console.error(`[Worker ${process.pid}] Local connection also failed:`, localErr);
+        process.exit(1);
+      }
+    }
+
+    app.listen(PORT, () => {
+      console.log(`[Worker ${process.pid}] Server started on port ${PORT}`);
     });
+  };
+
+  connectDB();
 }

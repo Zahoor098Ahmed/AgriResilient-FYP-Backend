@@ -44,7 +44,8 @@ export const signup = async (req, res) => {
           name: newUser.name,
           email: newUser.email,
           gender: newUser.gender,
-          role: newUser.role
+          role: newUser.role,
+          preferredLanguage: newUser.preferredLanguage
         }
       }
     });
@@ -87,7 +88,8 @@ export const socialLogin = async (req, res) => {
           id: user._id,
           name: user.name,
           email: user.email,
-          role: user.role
+          role: user.role,
+          preferredLanguage: user.preferredLanguage
         }
       }
     });
@@ -135,7 +137,8 @@ export const login = async (req, res) => {
           gender: user.gender,
           role: user.role,
           location: user.location,
-          profileImage: user.profileImage
+          profileImage: user.profileImage,
+          preferredLanguage: user.preferredLanguage
         }
       }
     });
@@ -164,13 +167,21 @@ export const getMe = async (req, res) => {
 
 export const updateMe = async (req, res) => {
   try {
-    const { name, gender, city } = req.body;
+    const { name, gender, city, lat, lon, preferredLanguage } = req.body;
     
     // Create update object
     const updateData = {};
     if (name) updateData.name = name;
     if (gender) updateData.gender = gender;
-    if (city) updateData.location = { city };
+    if (preferredLanguage) updateData.preferredLanguage = preferredLanguage;
+    
+    if (city) {
+      updateData.location = {
+        city,
+        lat: lat || undefined,
+        lon: lon || undefined
+      };
+    }
 
     const updatedUser = await User.findByIdAndUpdate(
       req.user.id,
@@ -189,7 +200,8 @@ export const updateMe = async (req, res) => {
           role: updatedUser.role,
           location: updatedUser.location,
           credits: updatedUser.credits,
-          profileImage: updatedUser.profileImage
+          profileImage: updatedUser.profileImage,
+          preferredLanguage: updatedUser.preferredLanguage
         }
       }
     });
@@ -296,7 +308,8 @@ export const resetPassword = async (req, res) => {
           id: user._id,
           name: user.name,
           email: user.email,
-          role: user.role
+          role: user.role,
+          preferredLanguage: user.preferredLanguage
         }
       }
     });

@@ -27,6 +27,11 @@ const userSchema = new mongoose.Schema({
     enum: ['male', 'female', 'other'],
     default: 'male'
   },
+  preferredLanguage: {
+    type: String,
+    enum: ['en', 'ur', 'sd'],
+    default: 'en'
+  },
   location: {
     city: String,
     lat: Number,
