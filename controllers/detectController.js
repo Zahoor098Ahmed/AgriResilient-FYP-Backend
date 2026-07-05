@@ -14,8 +14,12 @@ export const handleDetection = async (req, res) => {
     // Get language from query or body
     const language = req.query.lang || req.body.language || 'en';
 
+    // Use the user's profile location so suggested markets/recycling
+    // centers are actually near them, not generic far-away cities.
+    const userLocation = req.user.location?.city || null;
+
     // Call AI service
-    const aiResult = await detectObject(req.file.buffer, language);
+    const aiResult = await detectObject(req.file.buffer, language, req.file.mimetype, userLocation);
 
     // If detection was skipped or failed but didn't throw (shouldn't happen with new logic but safe to keep)
     if (!aiResult || aiResult.detected === "Analysis Failed") {
@@ -43,6 +47,7 @@ export const handleDetection = async (req, res) => {
       success: true,
       detected: aiResult.detected,
       recyclables: aiResult.recyclables,
+      nearbyCenters: aiResult.nearbyCenters || [],
       confidence: aiResult.confidence,
       savedId: savedDetection._id
     });
