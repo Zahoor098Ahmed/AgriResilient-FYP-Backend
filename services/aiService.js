@@ -469,41 +469,6 @@ const detectObjectRaw = async (imageBuffer, mimeType, userLocation) => {
   return null;
 };
 
-// Flattens the fields that actually need translating into a plain ordered
-// list, and rebuilds the object from a translated list of the same length.
-// Sending/receiving plain numbered text (instead of round-tripping JSON)
-// means the model can't corrupt the schema by translating keys, dropping
-// fields, or nesting things differently — it only ever has to hand back
-// text in the same order it received it.
-const flattenForTranslation = (data) => {
-  const strings = [data.detected];
-  for (const item of data.recyclables || []) {
-    strings.push(item.itemType, item.potential, item.value, item.description);
-  }
-  for (const center of data.nearbyCenters || []) {
-    strings.push(center.name, center.type);
-  }
-  return strings;
-};
-
-const rebuildFromTranslation = (data, translatedStrings) => {
-  let i = 0;
-  const detected = translatedStrings[i++];
-  const recyclables = (data.recyclables || []).map((item) => ({
-    ...item,
-    itemType: translatedStrings[i++],
-    potential: translatedStrings[i++],
-    value: translatedStrings[i++],
-    description: translatedStrings[i++],
-  }));
-  const nearbyCenters = (data.nearbyCenters || []).map((center) => ({
-    ...center,
-    name: translatedStrings[i++],
-    type: translatedStrings[i++],
-  }));
-  return { detected, recyclables, nearbyCenters, confidence: data.confidence };
-};
-
 const parseNumberedList = (text) => {
   const lines = (text || '').split('\n').map((l) => l.trim()).filter(Boolean);
   const items = [];
@@ -515,13 +480,15 @@ const parseNumberedList = (text) => {
 };
 
 /**
- * Translates an already-detected English result into Urdu/Sindhi. Kept as
- * a separate text-only step because translating known text is a much more
- * reliable task for these models than doing image understanding AND
- * generation in a low-resource language at once.
+ * Translates a flat list of English strings into Urdu/Sindhi, preserving
+ * order, via a plain numbered list (not JSON — a model miscounting or
+ * restructuring JSON keys would corrupt the schema; a numbered list just
+ * fails validation cleanly if the count is off). Kept generic and applied
+ * to SMALL lists on purpose: a combined "everything in one call" list
+ * increases the chance any single miscounted line invalidates the whole
+ * translation, throwing away content that was actually fine.
  */
-const translateDetection = async (data, language) => {
-  const strings = flattenForTranslation(data);
+const translateStringList = async (strings, language) => {
   const prompt = `
     Translate each numbered line below into the target language. Keep any PKR price numbers as digits,
     translating only the surrounding words. Return ONLY a numbered list with the exact same numbers,
@@ -543,13 +510,17 @@ const translateDetection = async (data, language) => {
     // Sindhi varies call to call, so a later attempt often succeeds where
     // an earlier one produced Urdu-contaminated text. Cheaper and faster
     // than waiting on Gemini, which frequently has no quota available.
+    // Exception: a 429 (rate/quota limit) won't resolve within milliseconds,
+    // so retrying immediately is pure wasted latency — skip straight to
+    // Gemini instead of burning 2 more guaranteed-failed attempts.
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
         const text = await callWithRetry(() => callGroqText(prompt, { jsonMode: false, temperature: 0.4 }), 1);
         const translated = tryParse(text);
-        if (translated) return rebuildFromTranslation(data, translated);
+        if (translated) return translated;
       } catch (error) {
         console.error(`Groq translation attempt ${attempt + 1} failed.`, error.message);
+        if (error.status === 429) break;
       }
     }
   }
@@ -561,13 +532,60 @@ const translateDetection = async (data, language) => {
       const response = await result.response;
       const text = response.text();
       const translated = tryParse(text);
-      if (translated) return rebuildFromTranslation(data, translated);
+      if (translated) return translated;
     } catch (error) {
       console.error('Gemini translation also failed.', error.message);
     }
   }
 
   return null;
+};
+
+/**
+ * Translates an already-detected English result into Urdu/Sindhi. Runs the
+ * main content (detected + recyclables) and nearbyCenters as two SEPARATE
+ * translation calls — if the (optional, smaller) nearbyCenters translation
+ * fails, the main content translation still succeeds independently instead
+ * of the whole thing falling back to English over one bad list.
+ */
+const translateDetection = async (data, language) => {
+  const mainStrings = [data.detected];
+  for (const item of data.recyclables || []) {
+    mainStrings.push(item.itemType, item.potential, item.value, item.description);
+  }
+
+  const translatedMain = await translateStringList(mainStrings, language);
+  if (!translatedMain) return null;
+
+  let i = 0;
+  const detected = translatedMain[i++];
+  const recyclables = (data.recyclables || []).map((item) => ({
+    ...item,
+    itemType: translatedMain[i++],
+    potential: translatedMain[i++],
+    value: translatedMain[i++],
+    description: translatedMain[i++],
+  }));
+
+  let nearbyCenters = data.nearbyCenters || [];
+  if (nearbyCenters.length > 0) {
+    const centerStrings = [];
+    for (const center of nearbyCenters) centerStrings.push(center.name, center.type);
+    const translatedCenters = await translateStringList(centerStrings, language);
+    if (translatedCenters) {
+      let j = 0;
+      nearbyCenters = nearbyCenters.map((center) => ({
+        ...center,
+        name: translatedCenters[j++],
+        type: translatedCenters[j++],
+      }));
+    }
+    // If center translation fails, we deliberately keep the English names
+    // rather than fail the whole result — a place name usually stays
+    // recognizable either way, and it's better than losing everything.
+  }
+
+  return { detected, recyclables, nearbyCenters, confidence: data.confidence };
 };
 
 /**
@@ -825,8 +843,76 @@ export const getCropAdvisory = async (cropType, userLocation, language = 'en') =
   return genericAdvisory[language] || genericAdvisory['en'];
 };
 
+const CHATBOT_FALLBACK_REPLY = {
+  en: "Sorry, I'm having trouble connecting right now. Please try again in a moment, or use the Advisory/Recycling pages directly for AI help.",
+  ur: 'معذرت، اس وقت مجھے رابطہ کرنے میں مشکل ہو رہی ہے۔ براہ کرم تھوڑی دیر بعد دوبارہ کوشش کریں، یا AI مدد کے لیے براہ راست مشورہ/ری سائیکلنگ کے صفحات استعمال کریں۔',
+  sd: 'معاف ڪجو، هن وقت مون کي رابطي ۾ ڏکيائي پيش اچي رهي آهي. مهرباني ڪري ٿوري دير بعد ٻيهر ڪوشش ڪريو، يا AI مدد لاءِ سڌو صلاح/ري سائيڪلنگ وارا صفحا استعمال ڪريو.',
+};
 
+/**
+ * Generates AgriBot's chat reply. Plain conversational text (not JSON),
+ * validated the same way as other Urdu/Sindhi content to avoid script
+ * contamination, with a graceful fallback message if generation fails
+ * entirely rather than surfacing an error to the user.
+ */
+export const getChatReply = async (userMessage, history = [], language = 'en') => {
+  const historyText = (history || [])
+    .slice(-6)
+    .map((m) => `${m.isUser ? 'User' : 'AgriBot'}: ${m.text}`)
+    .join('\n');
 
+  const prompt = `
+    You are "AgriBot", the friendly in-app assistant for AgriResilient, a Pakistani platform helping
+    farmers with: AI Crop Advisory (sowing/irrigation/fertilizer schedules for specific crops), Waste
+    Recycling (upload a photo of crop residue/waste to identify it and find nearby buyers), Weather
+    Alerts (real-time weather and flood/drought warnings), and Carbon Rewards (earning rewards for
+    sustainable practices).
+
+    Answer the user's message directly in 2-4 short sentences — this is a chat bubble, not an essay.
+    If their question relates to a specific app feature, mention it by name (e.g. "check the Advisory
+    page"). If they ask something unrelated to farming or the app, answer briefly and politely, then
+    gently steer back to how AgriResilient can help.
+
+    ${getLanguageInstruction(language)}
+
+    ${historyText ? `CONVERSATION SO FAR:\n${historyText}\n` : ''}
+    USER'S NEW MESSAGE: ${userMessage}
+
+    Reply with ONLY the chat reply text itself — no "AgriBot:" prefix, no quotes, no markdown formatting.
+  `;
+
+  const tryParse = (text) => {
+    const trimmed = (text || '').trim();
+    return trimmed && isScriptClean(trimmed, language) ? trimmed : null;
+  };
+
+  if (GROQ_API_KEY) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const text = await callWithRetry(() => callGroqText(prompt, { jsonMode: false, temperature: 0.7 }), 1);
+        const reply = tryParse(text);
+        if (reply) return reply;
+      } catch (error) {
+        console.error(`Groq chat attempt ${attempt + 1} failed.`, error.message);
+        if (error.status === 429) break;
+      }
+    }
+  }
+
+  if (process.env.GEMINI_API_KEY) {
+    try {
+      const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash", generationConfig: { temperature: 0.7 } });
+      const result = await callWithRetry(() => model.generateContent(prompt), 1);
+      const response = await result.response;
+      const reply = tryParse(response.text());
+      if (reply) return reply;
+    } catch (error) {
+      console.error('Gemini chat also failed.', error.message);
+    }
+  }
+
+  return CHATBOT_FALLBACK_REPLY[language] || CHATBOT_FALLBACK_REPLY.en;
+};
 
 
 

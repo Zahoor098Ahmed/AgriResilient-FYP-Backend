@@ -6,6 +6,7 @@ import detectRoutes from './routes/detect.js';
 import advisoryRoutes from './routes/advisory.js';
 import authRoutes from './routes/auth.js';
 import adminRoutes from './routes/admin.js';
+import chatRoutes from './routes/chat.js';
 
 dotenv.config();
 
@@ -36,6 +37,7 @@ app.use(express.urlencoded({ extended: true }));
 app.use('/api/auth', authRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/advisory', advisoryRoutes);
+app.use('/api/chat', chatRoutes);
 app.use('/api', detectRoutes);
 
 // Health check
