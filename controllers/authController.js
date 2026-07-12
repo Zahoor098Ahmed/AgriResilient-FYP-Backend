@@ -1,6 +1,6 @@
 import jwt from 'jsonwebtoken';
 import User from '../models/User.js';
-import { sendVerificationEmail } from '../utils/email.js';
+import { sendVerificationEmail, sendAdminOtpEmail } from '../utils/email.js';
 
 const signToken = (id) => {
   return jwt.sign({ id }, process.env.JWT_SECRET, {
@@ -144,6 +144,129 @@ export const login = async (req, res) => {
     });
   } catch (error) {
     res.status(400).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+
+// Step 1 of admin login: verify email+password+role, then email a 6-digit
+// OTP instead of issuing a token directly. No JWT is handed out here.
+export const adminLoginStart = async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide email and password'
+      });
+    }
+
+    const user = await User.findOne({ email }).select('+password');
+
+    if (!user || !(await user.comparePassword(password, user.password))) {
+      return res.status(401).json({
+        success: false,
+        message: 'Incorrect email or password'
+      });
+    }
+
+    if (user.role !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'This account does not have admin access'
+      });
+    }
+
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    user.adminOtp = otp;
+    user.adminOtpExpires = Date.now() + 10 * 60 * 1000; // 10 minutes
+    user.adminOtpAttempts = 0;
+    await user.save({ validateBeforeSave: false });
+
+    await sendAdminOtpEmail(user.email, otp);
+
+    res.status(200).json({
+      success: true,
+      otpRequired: true,
+      message: 'A verification code was sent to your email'
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+
+// Step 2 of admin login: verify the OTP and issue the real JWT. Locks the
+// code out after 5 wrong attempts, forcing a fresh login+OTP cycle rather
+// than allowing unlimited guesses against a 6-digit space.
+export const adminVerifyOtp = async (req, res) => {
+  try {
+    const { email, otp } = req.body;
+
+    if (!email || !otp) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide email and verification code'
+      });
+    }
+
+    const user = await User.findOne({ email, role: 'admin' });
+
+    if (!user || !user.adminOtp || !user.adminOtpExpires || user.adminOtpExpires < Date.now()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Verification code is invalid or has expired. Please log in again.'
+      });
+    }
+
+    if (user.adminOtp !== otp) {
+      user.adminOtpAttempts += 1;
+      if (user.adminOtpAttempts >= 5) {
+        user.adminOtp = undefined;
+        user.adminOtpExpires = undefined;
+        user.adminOtpAttempts = 0;
+        await user.save({ validateBeforeSave: false });
+        return res.status(400).json({
+          success: false,
+          message: 'Too many incorrect attempts. Please log in again to receive a new code.'
+        });
+      }
+      await user.save({ validateBeforeSave: false });
+      return res.status(400).json({
+        success: false,
+        message: `Incorrect verification code (${5 - user.adminOtpAttempts} attempts remaining)`
+      });
+    }
+
+    user.adminOtp = undefined;
+    user.adminOtpExpires = undefined;
+    user.adminOtpAttempts = 0;
+    await user.save({ validateBeforeSave: false });
+
+    const token = signToken(user._id);
+
+    res.status(200).json({
+      success: true,
+      token,
+      data: {
+        user: {
+          id: user._id,
+          name: user.name,
+          email: user.email,
+          gender: user.gender,
+          role: user.role,
+          location: user.location,
+          profileImage: user.profileImage,
+          preferredLanguage: user.preferredLanguage
+        }
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
       success: false,
       message: error.message
     });

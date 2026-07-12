@@ -7,23 +7,35 @@ dotenv.config();
 
 const seedAdmin = async () => {
   try {
+    const email = process.env.ADMIN_EMAIL;
+    const password = process.env.ADMIN_PASSWORD;
+
+    if (!email || !password) {
+      console.error('❌ Set ADMIN_EMAIL and ADMIN_PASSWORD in .env before running this script.');
+      process.exit(1);
+    }
+
     // Connect to database
     const MONGO_URI = process.env.MONGO_URI || process.env.MONGO_URI_LOCAL || 'mongodb://localhost:27017/recycle-vision';
     await mongoose.connect(MONGO_URI);
     console.log('✅ Connected to database');
 
-    // Check if admin already exists
-    const existingAdmin = await User.findOne({ email: 'admin@agriresilient.com' });
-    if (existingAdmin) {
-      console.log('ℹ️  Admin already exists with email: admin@agriresilient.com');
+    // If a user with this email already exists, promote them to admin and
+    // update their password rather than failing on the unique-email
+    // constraint or leaving a stale non-admin account behind.
+    const existing = await User.findOne({ email });
+    if (existing) {
+      existing.role = 'admin';
+      existing.password = password;
+      await existing.save();
+      console.log(`✅ Existing user promoted to admin: ${email}`);
       process.exit(0);
     }
 
-    // Create admin user
     const admin = new User({
       name: 'Admin User',
-      email: 'admin@agriresilient.com',
-      password: 'admin123', // You can change this later
+      email,
+      password,
       role: 'admin',
       gender: 'other',
       preferredLanguage: 'en',
@@ -37,9 +49,7 @@ const seedAdmin = async () => {
 
     await admin.save();
     console.log('✅ Admin user created successfully!');
-    console.log('📧 Email: admin@agriresilient.com');
-    console.log('🔑 Password: admin123');
-    console.log('⚠️  Please change the password immediately after first login!');
+    console.log(`📧 Email: ${email}`);
     process.exit(0);
   } catch (error) {
     console.error('❌ Error creating admin:', error);

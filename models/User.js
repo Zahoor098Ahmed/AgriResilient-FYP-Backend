@@ -52,7 +52,15 @@ const userSchema = new mongoose.Schema({
     default: Date.now
   },
   passwordResetToken: String,
-  passwordResetExpires: Date
+  passwordResetExpires: Date,
+  // Admin login 2FA (email OTP) — separate from password reset so the two
+  // flows can't be confused/reused for each other.
+  adminOtp: String,
+  adminOtpExpires: Date,
+  adminOtpAttempts: {
+    type: Number,
+    default: 0
+  }
 });
 
 // Hash password before saving

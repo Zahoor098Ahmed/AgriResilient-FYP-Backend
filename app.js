@@ -1,14 +1,21 @@
 import express from 'express';
 import dotenv from 'dotenv';
 import compression from 'compression';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import securityMiddleware from './middleware/security.js';
 import detectRoutes from './routes/detect.js';
 import advisoryRoutes from './routes/advisory.js';
 import authRoutes from './routes/auth.js';
 import adminRoutes from './routes/admin.js';
 import chatRoutes from './routes/chat.js';
+import contactRoutes from './routes/contact.js';
+import blogRoutes from './routes/blog.js';
+import contentRoutes from './routes/content.js';
 
 dotenv.config();
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const app = express();
 
@@ -33,11 +40,17 @@ securityMiddleware(app);
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Serve uploaded images (team photos, testimonial photos, etc.)
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
 // Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/advisory', advisoryRoutes);
 app.use('/api/chat', chatRoutes);
+app.use('/api/contact', contactRoutes);
+app.use('/api/blog', blogRoutes);
+app.use('/api/content', contentRoutes);
 app.use('/api', detectRoutes);
 
 // Health check

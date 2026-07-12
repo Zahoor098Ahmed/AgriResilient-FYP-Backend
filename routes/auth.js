@@ -1,6 +1,6 @@
 import express from 'express';
 import { body, validationResult } from 'express-validator';
-import { signup, login, getMe, updateMe, redeemReward, forgotPassword, resetPassword, socialLogin } from '../controllers/authController.js';
+import { signup, login, getMe, updateMe, redeemReward, forgotPassword, resetPassword, socialLogin, adminLoginStart, adminVerifyOtp } from '../controllers/authController.js';
 import { protect } from '../middleware/authMiddleware.js';
 
 const router = express.Router();
@@ -39,6 +39,26 @@ router.post(
 );
 
 router.post('/social-login', socialLogin);
+
+router.post(
+  '/admin-login',
+  [
+    body('email').isEmail().withMessage('Please provide a valid email'),
+    body('password').notEmpty().withMessage('Password is required'),
+  ],
+  validate,
+  adminLoginStart
+);
+
+router.post(
+  '/admin-verify-otp',
+  [
+    body('email').isEmail().withMessage('Please provide a valid email'),
+    body('otp').isLength({ min: 6, max: 6 }).withMessage('Verification code must be 6 digits'),
+  ],
+  validate,
+  adminVerifyOtp
+);
 
 router.get('/me', protect, getMe);
 router.patch('/update-me', protect, updateMe);

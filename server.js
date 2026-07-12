@@ -29,30 +29,47 @@ if (cluster.isPrimary) {
   // In this case it is an HTTP server
   const mongooseOptions = {
     maxPoolSize: 10,
-    serverSelectionTimeoutMS: 5000,
+    serverSelectionTimeoutMS: 10000,
     socketTimeoutMS: 45000,
   };
 
+  // Atlas is the single source of truth — every worker MUST land on the
+  // same database, or requests silently split across two different data
+  // sets depending on which worker handles them. Retry hard before ever
+  // falling back to Local, since a brief connection hiccup (not real
+  // downtime) was previously enough to strand a worker on an empty local
+  // database while its siblings stayed on Atlas.
+  const ATLAS_RETRY_ATTEMPTS = 5;
+  const ATLAS_RETRY_DELAY_MS = 4000;
+
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
   const connectDB = async () => {
-    try {
-      // Try primary URI (Atlas)
-      await mongoose.connect(MONGO_URI, mongooseOptions);
-      console.log(`[Worker ${process.pid}] Connected to MongoDB (Atlas/Primary)`);
-    } catch (err) {
-      console.error(`[Worker ${process.pid}] Atlas connection failed, trying Local...`);
+    for (let attempt = 1; attempt <= ATLAS_RETRY_ATTEMPTS; attempt++) {
       try {
-        // Fallback to Local
-        await mongoose.connect(MONGO_URI_LOCAL, mongooseOptions);
-        console.log(`[Worker ${process.pid}] Connected to MongoDB (Local Compass)`);
-      } catch (localErr) {
-        console.error(`[Worker ${process.pid}] Local connection also failed:`, localErr);
-        process.exit(1);
+        await mongoose.connect(MONGO_URI, mongooseOptions);
+        console.log(`[Worker ${process.pid}] Connected to MongoDB (Atlas/Primary)`);
+        app.listen(PORT, () => {
+          console.log(`[Worker ${process.pid}] Server started on port ${PORT}`);
+        });
+        return;
+      } catch (err) {
+        console.error(`[Worker ${process.pid}] Atlas connection attempt ${attempt}/${ATLAS_RETRY_ATTEMPTS} failed: ${err.message}`);
+        if (attempt < ATLAS_RETRY_ATTEMPTS) await sleep(ATLAS_RETRY_DELAY_MS);
       }
     }
 
-    app.listen(PORT, () => {
-      console.log(`[Worker ${process.pid}] Server started on port ${PORT}`);
-    });
+    console.error(`[Worker ${process.pid}] Atlas unreachable after ${ATLAS_RETRY_ATTEMPTS} attempts — falling back to Local. Data written now will NOT be visible once Atlas recovers.`);
+    try {
+      await mongoose.connect(MONGO_URI_LOCAL, mongooseOptions);
+      console.log(`[Worker ${process.pid}] Connected to MongoDB (Local Compass fallback)`);
+      app.listen(PORT, () => {
+        console.log(`[Worker ${process.pid}] Server started on port ${PORT}`);
+      });
+    } catch (localErr) {
+      console.error(`[Worker ${process.pid}] Local connection also failed:`, localErr);
+      process.exit(1);
+    }
   };
 
   connectDB();
