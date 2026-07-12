@@ -76,6 +76,21 @@ export const getAllUsers = async (req, res) => {
   }
 };
 
+export const deleteUser = async (req, res) => {
+  try {
+    if (req.params.id === req.user.id) {
+      return res.status(400).json({ success: false, message: "You can't delete your own admin account" });
+    }
+    const user = await User.findByIdAndDelete(req.params.id);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    res.status(204).json({ success: true, data: null });
+  } catch (error) {
+    res.status(400).json({ success: false, message: error.message });
+  }
+};
+
 export const deleteDetection = async (req, res) => {
   try {
     await Detection.findByIdAndDelete(req.params.id);

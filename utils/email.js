@@ -44,6 +44,27 @@ export const sendVerificationEmail = async (email, token) => {
   }
 };
 
+export const sendSignupOtpEmail = async (email, otp) => {
+  const message = `Your AgriResilient email verification code is: ${otp}. It is valid for 10 minutes. Enter it to finish creating your account.`;
+
+  console.log('--- SIGNUP VERIFICATION CODE ---');
+  console.log(`To: ${email} | Code: ${otp}`);
+  console.log('---------------------------------');
+
+  if (!isSmtpConfigured()) {
+    console.warn('[Email] SMTP not configured (SMTP_HOST/SMTP_EMAIL/SMTP_PASSWORD) — code was only logged above, not actually emailed.');
+    return false;
+  }
+
+  try {
+    await sendEmail({ email, subject: 'Verify your AgriResilient account', message });
+    return true;
+  } catch (err) {
+    console.error('Signup OTP email send error:', err);
+    return false;
+  }
+};
+
 export const sendAdminOtpEmail = async (email, otp) => {
   const message = `Your AgriResilient Admin verification code is: ${otp}. It is valid for 10 minutes. If you did not request this, secure your account immediately.`;
 

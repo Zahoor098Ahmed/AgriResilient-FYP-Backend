@@ -1,6 +1,7 @@
 import jwt from 'jsonwebtoken';
 import User from '../models/User.js';
-import { sendVerificationEmail, sendAdminOtpEmail } from '../utils/email.js';
+import PendingSignup from '../models/PendingSignup.js';
+import { sendVerificationEmail, sendAdminOtpEmail, sendSignupOtpEmail } from '../utils/email.js';
 
 const signToken = (id) => {
   return jwt.sign({ id }, process.env.JWT_SECRET, {
@@ -58,6 +59,96 @@ export const signup = async (req, res) => {
   }
 };
 
+// ---------- Email-verified registration (OTP) ----------
+// Two steps: registerStart holds the signup in PendingSignup and emails an
+// OTP; registerVerify only creates the real User once that code checks out.
+// No token is issued here — login stays a separate, required step.
+
+export const registerStart = async (req, res) => {
+  try {
+    const { name, email, password, gender } = req.body;
+
+    const existingUser = await User.findOne({ email });
+    if (existingUser) {
+      return res.status(400).json({ success: false, message: 'User already exists with this email' });
+    }
+
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const otpExpires = Date.now() + 10 * 60 * 1000;
+
+    await PendingSignup.findOneAndUpdate(
+      { email },
+      { name, email, password, gender: gender || 'male', otp, otpExpires, otpAttempts: 0 },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+
+    await sendSignupOtpEmail(email, otp);
+
+    res.status(200).json({
+      success: true,
+      otpRequired: true,
+      message: 'A verification code was sent to your email'
+    });
+  } catch (error) {
+    console.error('[Register Start Error]:', error);
+    res.status(400).json({ success: false, message: error.message });
+  }
+};
+
+export const registerVerify = async (req, res) => {
+  try {
+    const { email, otp } = req.body;
+
+    const pending = await PendingSignup.findOne({ email });
+    if (!pending) {
+      return res.status(400).json({ success: false, message: 'No pending signup found — please register again.' });
+    }
+
+    if (pending.otpExpires < Date.now()) {
+      await PendingSignup.deleteOne({ _id: pending._id });
+      return res.status(400).json({ success: false, message: 'Verification code expired — please register again.' });
+    }
+
+    if (pending.otp !== otp) {
+      pending.otpAttempts += 1;
+      if (pending.otpAttempts >= 5) {
+        await PendingSignup.deleteOne({ _id: pending._id });
+        return res.status(400).json({ success: false, message: 'Too many incorrect attempts — please register again.' });
+      }
+      await pending.save();
+      return res.status(400).json({ success: false, message: 'Incorrect verification code' });
+    }
+
+    const newUser = await User.create({
+      name: pending.name,
+      email: pending.email,
+      password: pending.password,
+      gender: pending.gender,
+      role: 'user'
+    });
+
+    await PendingSignup.deleteOne({ _id: pending._id });
+
+    res.status(201).json({
+      success: true,
+      message: 'Account created successfully! Please login.',
+      data: {
+        user: {
+          id: newUser._id,
+          name: newUser.name,
+          email: newUser.email,
+          gender: newUser.gender,
+          role: newUser.role,
+          preferredLanguage: newUser.preferredLanguage
+        }
+      }
+    });
+  } catch (error) {
+    console.error('[Register Verify Error]:', error);
+    res.status(400).json({ success: false, message: error.message });
+  }
+};
+
 export const socialLogin = async (req, res) => {
   try {
     const { name, email, provider, providerId } = req.body;
@@ -74,6 +165,15 @@ export const socialLogin = async (req, res) => {
         role: 'user',
         isSocial: true,
         provider: provider || 'google'
+      });
+    }
+
+    // Same rule as regular login: admin accounts must go through the
+    // OTP-verified /admin flow, never a passwordless social sign-in.
+    if (user.role === 'admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'Admin accounts must sign in through the Admin Portal (/admin), not social login.'
       });
     }
 
@@ -116,10 +216,28 @@ export const login = async (req, res) => {
     // 2) Check if user exists && password is correct
     const user = await User.findOne({ email }).select('+password');
 
-    if (!user || !(await user.comparePassword(password, user.password))) {
+    if (!user) {
+      return res.status(401).json({
+        success: false,
+        message: 'No account found with this email. It may have been removed by an admin — please create a new account.'
+      });
+    }
+
+    if (!(await user.comparePassword(password, user.password))) {
       return res.status(401).json({
         success: false,
         message: 'Incorrect email or password'
+      });
+    }
+
+    // Admin accounts must always go through the dedicated OTP-verified
+    // /admin login — never the regular site login. Without this check an
+    // admin's password alone would grant a full session here, silently
+    // skipping 2FA entirely.
+    if (user.role === 'admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'Admin accounts must sign in through the Admin Portal (/admin), not the regular login.'
       });
     }
 
