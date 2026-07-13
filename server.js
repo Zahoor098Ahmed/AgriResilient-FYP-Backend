@@ -1,11 +1,20 @@
-import mongoose from 'mongoose';
-import app from './app.js';
-import dotenv from 'dotenv';
+import mongoose from "mongoose";
+import app from "./app.js";
+import dotenv from "dotenv";
 
 dotenv.config();
 
+console.log("NODE_ENV:", process.env.NODE_ENV);
+console.log("PORT:", process.env.PORT);
+console.log("MONGO_URI exists:", !!process.env.MONGO_URI);
+
 const PORT = process.env.PORT || 5000;
 const MONGO_URI = process.env.MONGO_URI;
+
+if (!MONGO_URI) {
+  console.error("❌ ERROR: MONGO_URI environment variable is missing!");
+  process.exit(1);
+}
 
 const mongooseOptions = {
   maxPoolSize: 10,
@@ -13,28 +22,20 @@ const mongooseOptions = {
   socketTimeoutMS: 45000,
 };
 
-const ATLAS_RETRY_ATTEMPTS = 5;
-const ATLAS_RETRY_DELAY_MS = 4000;
+async function startServer() {
+  try {
+    await mongoose.connect(MONGO_URI, mongooseOptions);
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    console.log("✅ Connected to MongoDB");
 
-const connectDB = async () => {
-  for (let attempt = 1; attempt <= ATLAS_RETRY_ATTEMPTS; attempt++) {
-    try {
-      await mongoose.connect(MONGO_URI, mongooseOptions);
-      console.log(`Connected to MongoDB (Atlas)`);
-      app.listen(PORT, () => {
-        console.log(`Server started on port ${PORT}`);
-      });
-      return;
-    } catch (err) {
-      console.error(`Atlas connection attempt ${attempt}/${ATLAS_RETRY_ATTEMPTS} failed: ${err.message}`);
-      if (attempt < ATLAS_RETRY_ATTEMPTS) await sleep(ATLAS_RETRY_DELAY_MS);
-    }
+    app.listen(PORT, () => {
+      console.log(`🚀 Server running on port ${PORT}`);
+    });
+  } catch (err) {
+    console.error("❌ MongoDB Connection Error:");
+    console.error(err);
+    process.exit(1);
   }
+}
 
-  console.error(`Atlas unreachable after ${ATLAS_RETRY_ATTEMPTS} attempts. Exiting.`);
-  process.exit(1);
-};
-
-connectDB();
+startServer();
