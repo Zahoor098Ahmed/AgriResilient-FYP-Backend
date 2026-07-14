@@ -1,30 +1,24 @@
-import mongoose from "mongoose";
 import app from "./app.js";
 import dotenv from "dotenv";
+import { connectDB } from "./lib/db.js";
 
 dotenv.config();
 
-const MONGO_URI = process.env.MONGO_URI;
+const PORT = process.env.PORT || 5000;
 
-let isConnected = false;
+async function startServer() {
+  try {
+    await connectDB();
+    console.log("✅ Connected to MongoDB");
 
-async function connectDB() {
-  if (isConnected) return;
-
-  if (!MONGO_URI) {
-    throw new Error("MONGO_URI environment variable is missing!");
+    app.listen(PORT, () => {
+      console.log(`🚀 Server running on port ${PORT}`);
+    });
+  } catch (err) {
+    console.error("❌ MongoDB Connection Error:");
+    console.error(err);
+    process.exit(1);
   }
-
-  await mongoose.connect(MONGO_URI, {
-    maxPoolSize: 10,
-    serverSelectionTimeoutMS: 10000,
-    socketTimeoutMS: 45000,
-  });
-
-  isConnected = true;
-  console.log("✅ Connected to MongoDB");
 }
 
-await connectDB();
-
-export default app;
+startServer();
