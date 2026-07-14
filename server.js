@@ -4,39 +4,27 @@ import dotenv from "dotenv";
 
 dotenv.config();
 
-console.log("NODE_ENV:", process.env.NODE_ENV);
-console.log("PORT:", process.env.PORT);
-console.log("MONGO_URI exists:", !!process.env.MONGO_URI);
-console.log("TEST:", process.env.TEST);
-
-const PORT = process.env.PORT || 5000;
 const MONGO_URI = process.env.MONGO_URI;
 
 if (!MONGO_URI) {
-  console.error("❌ ERROR: MONGO_URI environment variable is missing!");
-  process.exit(1);
+  throw new Error("MONGO_URI environment variable is missing!");
 }
 
-const mongooseOptions = {
-  maxPoolSize: 10,
-  serverSelectionTimeoutMS: 10000,
-  socketTimeoutMS: 45000,
-};
-
-async function startServer() {
+// MongoDB sirf ek baar connect hoga
+if (mongoose.connection.readyState === 0) {
   try {
-    await mongoose.connect(MONGO_URI, mongooseOptions);
+    await mongoose.connect(MONGO_URI, {
+      maxPoolSize: 10,
+      serverSelectionTimeoutMS: 10000,
+      socketTimeoutMS: 45000,
+    });
 
     console.log("✅ Connected to MongoDB");
-
-    app.listen(PORT, () => {
-      console.log(`🚀 Server running on port ${PORT}`);
-    });
   } catch (err) {
-    console.error("❌ MongoDB Connection Error:");
-    console.error(err);
-    process.exit(1);
+    console.error("❌ MongoDB Connection Error:", err);
+    throw err;
   }
 }
 
-startServer();
+// Vercel Express app ko export karega
+export default app;
