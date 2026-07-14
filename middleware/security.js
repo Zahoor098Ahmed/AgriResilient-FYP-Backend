@@ -1,37 +1,51 @@
-import helmet from 'helmet';
-import rateLimit from 'express-rate-limit';
-import cors from 'cors';
-import dotenv from 'dotenv';
+import helmet from "helmet";
+import rateLimit from "express-rate-limit";
+import cors from "cors";
+import dotenv from "dotenv";
 
 dotenv.config();
 
-// Rate limiting: max 100 requests per IP per minute
+const allowedOrigins = [
+  "http://localhost:3000",
+  "http://localhost:5050",
+  "https://agri-resilient-fyp-frontend-95mt.vercel.app/" // <-- Apna frontend URL yahan likho
+];
+
 const limiter = rateLimit({
-  windowMs: 1 * 60 * 1000, // 1 minute
+  windowMs: 60 * 1000, // 1 minute
   max: 100,
+  standardHeaders: true,
+  legacyHeaders: false,
   message: {
     success: false,
-    message: 'Too many requests from this IP, please try again after a minute'
+    message: "Too many requests. Please try again later."
   }
 });
 
 const securityMiddleware = (app) => {
-  // Sets secure HTTP headers - but relaxed for local development
-  app.use(helmet({
-    crossOriginResourcePolicy: false,
-    contentSecurityPolicy: false,
-  }));
+  app.use(
+    helmet({
+      crossOriginResourcePolicy: false,
+      contentSecurityPolicy: false
+    })
+  );
 
-  // CORS: allow all for development
-  app.use(cors({
-    origin: '*',
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
-    credentials: true
-  }));
+  app.use(
+    cors({
+      origin: function (origin, callback) {
+        if (!origin || allowedOrigins.includes(origin)) {
+          callback(null, true);
+        } else {
+          callback(new Error("Not allowed by CORS"));
+        }
+      },
+      credentials: true,
+      methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+      allowedHeaders: ["Content-Type", "Authorization"]
+    })
+  );
 
-  // Apply rate limiter
-  app.use('/api/', limiter);
+  app.use("/api", limiter);
 };
 
 export default securityMiddleware;
