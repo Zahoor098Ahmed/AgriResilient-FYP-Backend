@@ -6,25 +6,25 @@ dotenv.config();
 
 const MONGO_URI = process.env.MONGO_URI;
 
-if (!MONGO_URI) {
-  throw new Error("MONGO_URI environment variable is missing!");
-}
+let isConnected = false;
 
-// MongoDB sirf ek baar connect hoga
-if (mongoose.connection.readyState === 0) {
-  try {
-    await mongoose.connect(MONGO_URI, {
-      maxPoolSize: 10,
-      serverSelectionTimeoutMS: 10000,
-      socketTimeoutMS: 45000,
-    });
+async function connectDB() {
+  if (isConnected) return;
 
-    console.log("✅ Connected to MongoDB");
-  } catch (err) {
-    console.error("❌ MongoDB Connection Error:", err);
-    throw err;
+  if (!MONGO_URI) {
+    throw new Error("MONGO_URI environment variable is missing!");
   }
+
+  await mongoose.connect(MONGO_URI, {
+    maxPoolSize: 10,
+    serverSelectionTimeoutMS: 10000,
+    socketTimeoutMS: 45000,
+  });
+
+  isConnected = true;
+  console.log("✅ Connected to MongoDB");
 }
 
-// Vercel Express app ko export karega
+await connectDB();
+
 export default app;
