@@ -34,8 +34,14 @@ const detectionCacheSchema = new mongoose.Schema({
   ],
   nearbyCenters: [
     {
-      name: String,
-      type: String
+      // "type" is a reserved key in Mongoose schema shorthand (it means
+      // "this path's type is X"), so a subdocument field literally named
+      // "type" must be wrapped as { type: { type: String } } — otherwise
+      // Mongoose misreads the whole { name, type } object as "this array
+      // holds plain Strings", silently discarding the object shape and
+      // throwing a CastError the first time real data hits it.
+      name: { type: String },
+      type: { type: String }
     }
   ],
   confidence: {

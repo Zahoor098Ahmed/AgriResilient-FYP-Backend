@@ -21,8 +21,12 @@ const GEMINI_MODEL = 'gemini-3-flash-preview';
 // so different Google Cloud projects/quotas can be pooled. Every Gemini call
 // in this file goes through callGeminiWithRotation below instead of talking
 // to the SDK directly.
-const GEMINI_API_KEYS = [process.env.GEMINI_API_KEY, process.env.GEMINI_API_KEY_2]
-  .filter(Boolean);
+const GEMINI_API_KEYS = [
+  process.env.GEMINI_API_KEY,
+  process.env.GEMINI_API_KEY_2,
+  process.env.GEMINI_API_KEY_3,
+  process.env.GEMINI_API_KEY_4
+].filter(Boolean);
 const geminiClients = GEMINI_API_KEYS.map((key) => new GoogleGenerativeAI(key));
 
 // Index of the key to try first on the next call — sticks with whichever
@@ -448,11 +452,44 @@ const callWithRetry = async (fn, maxRetries = 2) => {
   throw lastError;
 };
 
+// The model occasionally emits nearbyCenters/recyclables as a STRING
+// containing a JS-object-literal blob (unquoted keys, single quotes)
+// instead of a real nested JSON array — technically still valid outer
+// JSON, so parseJsonFromText doesn't catch it. Saving that string straight
+// to Mongo's typed array schema throws a CastError, which was surfacing as
+// a 500 on every detect request that got this shape. Recover the {name,
+// type}/{itemType,...} objects out of it via regex instead of eval'ing the
+// text — this is untrusted, AI-generated content, so no code execution.
+const coerceToArray = (value) => {
+  if (Array.isArray(value)) return value;
+  if (typeof value !== 'string') return [];
+
+  try {
+    const parsed = JSON.parse(value);
+    if (Array.isArray(parsed)) return parsed;
+  } catch {
+    // fall through to the lenient extraction below
+  }
+
+  const items = [];
+  const objectChunks = value.match(/\{[^{}]*\}/g) || [];
+  for (const chunk of objectChunks) {
+    const obj = {};
+    const fieldRegex = /([a-zA-Z]+)\s*:\s*['"]([^'"]*)['"]/g;
+    let match;
+    while ((match = fieldRegex.exec(chunk))) {
+      obj[match[1]] = match[2];
+    }
+    if (Object.keys(obj).length > 0) items.push(obj);
+  }
+  return items;
+};
+
 const normalizeDetection = (aiData) => ({
   isValid: aiData.isValid !== false,
   detected: aiData.detected || "Waste Item",
-  recyclables: aiData.recyclables || [],
-  nearbyCenters: aiData.nearbyCenters || [],
+  recyclables: coerceToArray(aiData.recyclables),
+  nearbyCenters: coerceToArray(aiData.nearbyCenters),
   confidence: aiData.confidence || 0.95
 });
 
@@ -663,7 +700,11 @@ export const detectObject = async (imageBuffer, language = 'en', mimeType = 'ima
   const englishResult = await detectObjectRaw(imageBuffer, mimeType, userLocation);
 
   if (!englishResult) {
-    return getDetectFallback(language);
+    // Both AI providers failed for this request — this is a generic,
+    // not-image-specific canned answer, so it must never be cached against
+    // this image's hash (that would permanently lock a real photo to a
+    // dummy result even after the provider issue clears up).
+    return { ...getDetectFallback(language), isFallback: true };
   }
 
   // Invalid (non-crop/non-waste) images skip translation and fallback —

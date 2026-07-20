@@ -36,9 +36,12 @@ export const handleDetection = async (req, res) => {
         }
       : await detectObject(req.file.buffer, language, req.file.mimetype, userLocation);
 
-    if (!cached && aiResult) {
+    if (!cached && aiResult && !aiResult.isFallback) {
       // Cache regardless of isValid — a repeat of an invalid image should
-      // also be rejected instantly without spending another AI call.
+      // also be rejected instantly without spending another AI call. Never
+      // cache a generic provider-failure fallback though — that's not
+      // specific to this image and shouldn't stick permanently once the
+      // AI providers recover.
       await DetectionCache.findOneAndUpdate(
         { imageHash, language, userLocation },
         { imageHash, language, userLocation, ...aiResult },
