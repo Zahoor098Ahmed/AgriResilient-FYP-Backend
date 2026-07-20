@@ -8,7 +8,7 @@ dotenv.config();
 const allowedOrigins = [
   "http://localhost:3000",
   "http://localhost:5050",
-  "https://agri-resilient-fyp-frontend-95mt.vercel.app/" // <-- Apna frontend URL yahan likho
+  "https://agri-resilient-fyp-frontend-qxpe.vercel.app" // <-- Apna frontend URL yahan likho
 ];
 
 const limiter = rateLimit({

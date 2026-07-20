@@ -1,4 +1,6 @@
+import crypto from 'crypto';
 import Detection from '../models/Detection.js';
+import DetectionCache from '../models/DetectionCache.js';
 import { detectObject } from '../services/aiService.js';
 
 export const handleDetection = async (req, res) => {
@@ -18,14 +20,46 @@ export const handleDetection = async (req, res) => {
     // centers are actually near them, not generic far-away cities.
     const userLocation = req.user.location?.city || null;
 
-    // Call AI service
-    const aiResult = await detectObject(req.file.buffer, language, req.file.mimetype, userLocation);
+    // Identical image bytes always produce the same AI answer, so a content
+    // hash lets us skip the AI call entirely (and its token cost) whenever
+    // this exact photo was analyzed before for this language/location.
+    const imageHash = crypto.createHash('sha256').update(req.file.buffer).digest('hex');
+    const cached = await DetectionCache.findOne({ imageHash, language, userLocation });
+
+    const aiResult = cached
+      ? {
+          isValid: cached.isValid,
+          detected: cached.detected,
+          recyclables: cached.recyclables,
+          nearbyCenters: cached.nearbyCenters,
+          confidence: cached.confidence
+        }
+      : await detectObject(req.file.buffer, language, req.file.mimetype, userLocation);
+
+    if (!cached && aiResult) {
+      // Cache regardless of isValid — a repeat of an invalid image should
+      // also be rejected instantly without spending another AI call.
+      await DetectionCache.findOneAndUpdate(
+        { imageHash, language, userLocation },
+        { imageHash, language, userLocation, ...aiResult },
+        { upsert: true }
+      );
+    }
 
     // If detection was skipped or failed but didn't throw (shouldn't happen with new logic but safe to keep)
     if (!aiResult || aiResult.detected === "Analysis Failed") {
       return res.status(503).json({
         success: false,
         message: 'AI analysis is currently unavailable. Please try again.'
+      });
+    }
+
+    // The image doesn't show a recognizable crop/agricultural waste item —
+    // reject it instead of saving a guessed detection to the database.
+    if (aiResult.isValid === false) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid image: this does not appear to be a crop or agricultural waste photo. Please upload a clear image of the crop or waste item.'
       });
     }
 

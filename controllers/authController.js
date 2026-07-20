@@ -409,13 +409,13 @@ export const getMe = async (req, res) => {
 export const updateMe = async (req, res) => {
   try {
     const { name, gender, city, lat, lon, preferredLanguage } = req.body;
-    
+
     // Create update object
     const updateData = {};
     if (name) updateData.name = name;
     if (gender) updateData.gender = gender;
     if (preferredLanguage) updateData.preferredLanguage = preferredLanguage;
-    
+
     if (city) {
       updateData.location = {
         city,

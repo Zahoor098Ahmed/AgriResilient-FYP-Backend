@@ -1,14 +1,78 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import dotenv from 'dotenv';
+import AdvisoryCache from '../models/AdvisoryCache.js';
 
 dotenv.config();
 
+// Used only by the crop advisory and chatbot features, unchanged from before.
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions';
 const GROQ_VISION_MODEL = 'meta-llama/llama-4-scout-17b-16e-instruct';
 const GROQ_TEXT_MODEL = 'llama-3.3-70b-versatile';
+
+// Current-generation Gemini model — gemini-1.5-flash/gemini-2.5-flash are
+// both "no longer available to new users" on newer API keys, so this is
+// the one confirmed working across both key generations in this project.
+const GEMINI_MODEL = 'gemini-3-flash-preview';
+
+// Supports multiple Gemini API keys (GEMINI_API_KEY, GEMINI_API_KEY_2, ...)
+// so different Google Cloud projects/quotas can be pooled. Every Gemini call
+// in this file goes through callGeminiWithRotation below instead of talking
+// to the SDK directly.
+const GEMINI_API_KEYS = [process.env.GEMINI_API_KEY, process.env.GEMINI_API_KEY_2]
+  .filter(Boolean);
+const geminiClients = GEMINI_API_KEYS.map((key) => new GoogleGenerativeAI(key));
+
+// Index of the key to try first on the next call — sticks with whichever
+// key last worked so we don't ping-pong between keys on every request.
+let activeGeminiKeyIndex = 0;
+// Per-key timestamp (ms) before which that key is skipped, set when a key
+// hits a quota/429 error. Resets at the next local midnight, so a key that
+// runs out today automatically becomes available again tomorrow.
+const geminiKeyExhaustedUntil = new Array(GEMINI_API_KEYS.length).fill(0);
+
+const nextMidnight = () => {
+  const d = new Date();
+  d.setHours(24, 0, 0, 0);
+  return d.getTime();
+};
+
+const isQuotaError = (error) =>
+  error.status === 429 || error.message?.includes('429') || error.message?.includes('quota');
+
+/**
+ * Runs a Gemini generateContent call, rotating across all configured API
+ * keys. If the active key hits a quota error it's marked exhausted until
+ * the next day and the SAME call retries immediately on the next available
+ * key, so a request only fails once every configured key is exhausted.
+ */
+const callGeminiWithRotation = async (generationConfig, contentParts) => {
+  if (geminiClients.length === 0) throw new Error('No Gemini API key configured');
+
+  let lastError;
+  for (let attempt = 0; attempt < geminiClients.length; attempt++) {
+    const i = (activeGeminiKeyIndex + attempt) % geminiClients.length;
+    if (Date.now() < geminiKeyExhaustedUntil[i]) continue;
+
+    try {
+      const model = geminiClients[i].getGenerativeModel({ model: GEMINI_MODEL, generationConfig });
+      const result = await callWithRetry(() => model.generateContent(contentParts), 1);
+      activeGeminiKeyIndex = i;
+      return (await result.response).text();
+    } catch (error) {
+      lastError = error;
+      if (isQuotaError(error)) {
+        console.warn(`[Gemini] Key #${i + 1} exhausted, switching to next key until tomorrow.`);
+        geminiKeyExhaustedUntil[i] = nextMidnight();
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw lastError || new Error('All Gemini API keys are currently exhausted');
+};
 
 /**
  * Produces a strict language directive for the AI prompt. Urdu and Sindhi
@@ -385,6 +449,7 @@ const callWithRetry = async (fn, maxRetries = 2) => {
 };
 
 const normalizeDetection = (aiData) => ({
+  isValid: aiData.isValid !== false,
   detected: aiData.detected || "Waste Item",
   recyclables: aiData.recyclables || [],
   nearbyCenters: aiData.nearbyCenters || [],
@@ -399,7 +464,15 @@ const buildDetectPromptEn = (userLocation) => {
         possible about what it actually is (e.g. "Wheat Straw", "Cotton Stalks", "Onion Peels"), not a
         generic category. Respond in English.
 
-        STRICT RULES:
+        VALIDITY CHECK (do this first): This tool is only for photos of crop residue, farm/agricultural
+        waste, or recyclable organic material. If the image does NOT clearly show a crop, crop
+        residue, or agricultural/organic waste item — e.g. it's a person, an unrelated object, a
+        screenshot, a blurry/unreadable photo, or anything not plausibly farm waste — set "isValid" to
+        false, set "detected" to a short reason (e.g. "Not a recognizable crop or waste image"), and
+        return EMPTY arrays for "recyclables" and "nearbyCenters". Do NOT guess or invent an item in
+        that case.
+
+        STRICT RULES (only apply when isValid is true):
         1. REAL PKR DATA: Provide current market prices in Pakistan (e.g., 500 PKR, 1200 PKR/40kg).
         2. LOCAL MARKETS: The user is located in/near "${locationText}". Recommend REAL mandis, recycling
            centers, or buyers actually near that specific location, not generic far-away cities — only
@@ -412,6 +485,7 @@ const buildDetectPromptEn = (userLocation) => {
 
         OUTPUT FORMAT (Strict JSON only):
         {
+          "isValid": true,
           "detected": "Exact Item Name",
           "confidence": 0.99,
           "recyclables": [
@@ -449,21 +523,16 @@ const detectObjectRaw = async (imageBuffer, mimeType, userLocation) => {
     }
   }
 
-  if (process.env.GEMINI_API_KEY) {
-    try {
-      const model = genAI.getGenerativeModel({
-        model: "gemini-1.5-flash",
-        generationConfig: { temperature: 0.4, topP: 0.8, topK: 40 }
-      });
-      const imageParts = [{ inlineData: { data: base64Image, mimeType } }];
-      const result = await callWithRetry(() => model.generateContent([prompt, ...imageParts]), 1);
-      const response = await result.response;
-      const text = response.text();
-      const aiData = parseJsonFromText(text);
-      if (aiData) return normalizeDetection(aiData);
-    } catch (error) {
-      console.error('Gemini vision detection also failed.', error.message);
-    }
+  try {
+    const imageParts = [{ inlineData: { data: base64Image, mimeType } }];
+    const text = await callGeminiWithRotation(
+      { temperature: 0.4, topP: 0.8, topK: 40 },
+      [prompt, ...imageParts]
+    );
+    const aiData = parseJsonFromText(text);
+    if (aiData) return normalizeDetection(aiData);
+  } catch (error) {
+    console.error('Gemini vision detection also failed.', error.message);
   }
 
   return null;
@@ -525,17 +594,12 @@ const translateStringList = async (strings, language) => {
     }
   }
 
-  if (process.env.GEMINI_API_KEY) {
-    try {
-      const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash", generationConfig: { temperature: 0.3 } });
-      const result = await callWithRetry(() => model.generateContent(prompt), 1);
-      const response = await result.response;
-      const text = response.text();
-      const translated = tryParse(text);
-      if (translated) return translated;
-    } catch (error) {
-      console.error('Gemini translation also failed.', error.message);
-    }
+  try {
+    const text = await callGeminiWithRotation({ temperature: 0.3 }, prompt);
+    const translated = tryParse(text);
+    if (translated) return translated;
+  } catch (error) {
+    console.error('Gemini translation also failed.', error.message);
   }
 
   return null;
@@ -602,12 +666,19 @@ export const detectObject = async (imageBuffer, language = 'en', mimeType = 'ima
     return getDetectFallback(language);
   }
 
+  // Invalid (non-crop/non-waste) images skip translation and fallback —
+  // the frontend just needs the isValid flag and never renders recyclables
+  // or nearbyCenters for these, so there is nothing worth translating.
+  if (!englishResult.isValid) {
+    return englishResult;
+  }
+
   if (language === 'en') {
     return englishResult;
   }
 
   const translated = await translateDetection(englishResult, language);
-  return translated || englishResult;
+  return translated ? { ...translated, isValid: true } : englishResult;
 };
 
 const getDetectFallback = (language) => {
@@ -686,6 +757,7 @@ const getDetectFallback = (language) => {
 
   return {
     ...fallbacks[language] || fallbacks['en'],
+    isValid: true,
     // No real location data backs this generic fallback, so we deliberately
     // don't invent nearby center names here — the frontend hides that
     // section rather than show fabricated places.
@@ -703,6 +775,28 @@ export const getCropAdvisory = async (cropType, userLocation, language = 'en') =
     const cached = advisoryCache.get(cacheKey);
     if (Date.now() - cached.timestamp < 3600000) return cached.data;
   }
+
+  // Persistent DB cache — survives server restarts, so a crop/location/
+  // language combo that was already AI-generated once never spends AI
+  // tokens again.
+  try {
+    const dbCached = await AdvisoryCache.findOne({ cropType, location: userLocation || null, language });
+    if (dbCached) {
+      advisoryCache.set(cacheKey, { timestamp: Date.now(), data: dbCached.data });
+      return dbCached.data;
+    }
+  } catch (error) {
+    console.error('Advisory DB cache lookup failed, continuing without it.', error.message);
+  }
+
+  const saveAdvisoryCache = (data) => {
+    advisoryCache.set(cacheKey, { timestamp: Date.now(), data });
+    AdvisoryCache.findOneAndUpdate(
+      { cropType, location: userLocation || null, language },
+      { cropType, location: userLocation || null, language, data },
+      { upsert: true }
+    ).catch((error) => console.error('Advisory DB cache save failed.', error.message));
+  };
 
   const langName = language === 'ur' ? 'Urdu' : language === 'sd' ? 'Sindhi' : 'English';
 
@@ -744,7 +838,7 @@ export const getCropAdvisory = async (cropType, userLocation, language = 'en') =
       const text = await callWithRetry(() => callGroqText(prompt), 1);
       const advisoryData = parseJsonFromText(text);
       if (advisoryData && isScriptClean(advisoryData, language)) {
-        advisoryCache.set(cacheKey, { timestamp: Date.now(), data: advisoryData });
+        saveAdvisoryCache(advisoryData);
         return advisoryData;
       }
     } catch (error) {
@@ -766,7 +860,7 @@ export const getCropAdvisory = async (cropType, userLocation, language = 'en') =
       const advisoryData = parseJsonFromText(text);
 
       if (advisoryData && isScriptClean(advisoryData, language)) {
-        advisoryCache.set(cacheKey, { timestamp: Date.now(), data: advisoryData });
+        saveAdvisoryCache(advisoryData);
         return advisoryData;
       }
     } catch (error) {
