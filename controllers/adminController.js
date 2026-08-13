@@ -3,6 +3,10 @@ import User from '../models/User.js';
 import ContactSubmission from '../models/ContactSubmission.js';
 import BlogPost from '../models/BlogPost.js';
 import SiteContent from '../models/SiteContent.js';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // ---------- Image upload (team photos, testimonial photos, etc.) ----------
 
@@ -12,9 +16,21 @@ export const uploadImage = async (req, res) => {
       return res.status(400).json({ success: false, message: 'No file uploaded' });
     }
     const backendUrl = `${req.protocol}://${req.get('host')}`;
+    // Ensure uploads directory exists
+    const uploadsDir = path.join(__dirname, '..', 'uploads');
+    if (!fs.existsSync(uploadsDir)) {
+      fs.mkdirSync(uploadsDir, { recursive: true });
+    }
+    // Create a unique filename to avoid collisions
+    const timestamp = Date.now();
+    const safeName = req.file.originalname.replace(/\s+/g, '_');
+    const filename = `${timestamp}-${safeName}`;
+    // Write file buffer to disk
+    await fs.promises.writeFile(path.join(uploadsDir, filename), req.file.buffer);
+    // Return the public URL for the saved file
     res.status(201).json({
       success: true,
-      data: { url: `${backendUrl}/uploads/${req.file.filename}` }
+      data: { url: `${backendUrl}/uploads/${filename}` }
     });
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });
